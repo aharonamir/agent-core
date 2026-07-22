@@ -18,7 +18,7 @@ from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.tool import Input, Output, Tool, ToolCard
 from openjiuwen.core.session.agent import Session
 from openjiuwen.harness.tools.base_tool import ToolOutput
-from openjiuwen.harness.prompts.tools import build_tool_card
+from openjiuwen.harness.prompts.tools import ToolCardBuildOptions, build_tool_card
 try:
     from openjiuwen.harness.tools.browser_move.playwright_runtime.browser_logging import (
         browser_agent_log_info,
@@ -112,6 +112,21 @@ class TaskTool(Tool):
                 reason="Both 'subagent_type' and 'task' are required",
             )
 
+        browser_capabilities: Optional[List[str]] = None
+        if str(subagent_type) == "browser_agent":
+            raw_capabilities = inputs.get("browser_capabilities")
+            if raw_capabilities is None:
+                browser_capabilities = []
+            elif isinstance(raw_capabilities, list) and all(
+                isinstance(capability, str) for capability in raw_capabilities
+            ):
+                browser_capabilities = list(raw_capabilities)
+            else:
+                raise build_error(
+                    StatusCode.TOOL_TASK_TOOL_INVOKED,
+                    reason="'browser_capabilities' must be a list of strings",
+                )
+
         parent_session_id = parent_session.get_session_id()
         sub_session_id = self._build_sub_session_id(parent_session_id, str(subagent_type))
         logger.info(
@@ -120,7 +135,14 @@ class TaskTool(Tool):
         )
 
         try:
-            subagent = self.parent_agent.create_subagent(subagent_type, sub_session_id)
+            if browser_capabilities is None:
+                subagent = self.parent_agent.create_subagent(subagent_type, sub_session_id)
+            else:
+                subagent = self.parent_agent.create_subagent(
+                    subagent_type,
+                    sub_session_id,
+                    browser_capabilities=browser_capabilities,
+                )
         except Exception as exc:
             logger.error(f"[TaskTool] Subagent creation failed: type={subagent_type}, error={exc}")
             raise build_error(
@@ -175,8 +197,8 @@ def create_task_tool(
         name="task_tool",
         tool_id="task_tool",
         language=language,
-        format_args={"available_agents": available_agents},
         agent_id=agent_id,
+        options=ToolCardBuildOptions(format_args={"available_agents": available_agents}),
     )
 
     return [TaskTool(card=card, parent_agent=parent_agent, language=language)]
