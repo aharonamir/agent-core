@@ -4,13 +4,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import pytest
 
+from openjiuwen.core.context_engine import LOOP_COMPACT_BAILOUT_STATE_KEY
 from openjiuwen.core.context_engine.processor.compressor.dialogue_compressor import (
     DialogueCompressorConfig,
 )
 from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
+from openjiuwen.core.runner.callback.errors import AbortError
 from openjiuwen.core.foundation.llm import (
     SystemMessage,
     AssistantMessage,
@@ -129,14 +131,40 @@ async def test_init_processors_merge(tmp_path: Path):
         (
             True,
             None,
-            ["MessageSummaryOffloader", "DialogueCompressor", "CurrentRoundCompressor", "RoundLevelCompressor"],
+            [
+                "MessageSummaryOffloader",
+                "ReasoningToolLoopCompactProcessor",
+                "DialogueCompressor",
+                "CurrentRoundCompressor",
+                "RoundLevelCompressor",
+            ],
         ),
         (True, [("d", DialogueCompressorConfig(messages_threshold=99))],
-         ["MessageSummaryOffloader", "DialogueCompressor", "CurrentRoundCompressor", "RoundLevelCompressor", "d"]),
+         [
+             "MessageSummaryOffloader",
+             "ReasoningToolLoopCompactProcessor",
+             "DialogueCompressor",
+             "CurrentRoundCompressor",
+             "RoundLevelCompressor",
+             "d",
+         ]),
         (True, [("c", DialogueCompressorConfig(messages_to_keep=5))],
-         ["MessageSummaryOffloader", "DialogueCompressor", "CurrentRoundCompressor", "RoundLevelCompressor", "c"]),
+         [
+             "MessageSummaryOffloader",
+             "ReasoningToolLoopCompactProcessor",
+             "DialogueCompressor",
+             "CurrentRoundCompressor",
+             "RoundLevelCompressor",
+             "c",
+         ]),
         (True, [("DialogueCompressor", DialogueCompressorConfig(messages_threshold=99))],
-         ["MessageSummaryOffloader", "DialogueCompressor", "CurrentRoundCompressor", "RoundLevelCompressor"]),
+         [
+             "MessageSummaryOffloader",
+             "ReasoningToolLoopCompactProcessor",
+             "DialogueCompressor",
+             "CurrentRoundCompressor",
+             "RoundLevelCompressor",
+         ]),
     ]
     for preset, processors, expected_keys in cases:
         sys_operation = _make_sys_operation(tmp_path)
@@ -196,6 +224,27 @@ async def test_init_preset_defaults(tmp_path: Path):
     assert round_lvl.target_total_tokens == 160000
     assert round_lvl.keep_recent_messages == 6
 
+
+@pytest.mark.asyncio
+async def test_init_logs_processor_config_module_paths(tmp_path: Path):
+    sys_operation = _make_sys_operation(tmp_path)
+    workspace = Workspace(root_path=str(tmp_path))
+    agent = _make_agent(sys_operation, workspace)
+    rail = ContextProcessorRail(preset=True)
+
+    with patch(
+        "openjiuwen.harness.rails.context_engineer.context_processor_rail.logger.info"
+    ) as info:
+        await agent.register_rail(rail)
+        await agent.ensure_initialized()
+
+    messages = [call.args[0] % call.args[1:] for call in info.call_args_list]
+    message = next(message for message in messages if message.startswith("context processors initialized:"))
+    assert (
+        "MessageSummaryOffloader="
+        "openjiuwen.core.context_engine.processor.offloader.message_summary_offloader."
+        "MessageSummaryOffloaderConfig"
+    ) in message
 
 
 # =============================================================================
@@ -1239,4 +1288,116 @@ async def test_before_model_call_injects_offload_section(tmp_path: Path):
 
     assert mock_builder.has_section("offload")
 
+
+# =============================================================================
+# ContextProcessorRail - reasoning/tool loop bail-out Tests
+# =============================================================================
+
+@pytest.mark.asyncio
+async def test_before_model_call_bailout_raises_when_threshold_reached(tmp_path: Path):
+    """before_model_call should abort when the loop counter reaches the threshold."""
+    sys_operation = _make_sys_operation(tmp_path)
+    workspace = Workspace(root_path=str(tmp_path))
+    agent = _make_agent(sys_operation, workspace)
+
+    # Preset includes ReasoningToolLoopCompactProcessor with bailout_threshold=2.
+    rail = ContextProcessorRail(preset=True)
+    await agent.register_rail(rail)
+    await agent.ensure_initialized()
+
+    mock_session = Mock()
+    mock_session.get_state.return_value = 3  # counter == threshold
+
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(messages=[]),
+        session=mock_session,
+    )
+
+    with pytest.raises(AbortError):
+        await rail.before_model_call(ctx)
+
+    # Counter is cleared before raising so a retry / next invoke starts clean.
+    mock_session.update_state.assert_any_call({LOOP_COMPACT_BAILOUT_STATE_KEY: 0})
+
+
+@pytest.mark.asyncio
+async def test_before_model_call_no_bailout_below_threshold(tmp_path: Path):
+    """before_model_call should not abort while the counter is below threshold."""
+    sys_operation = _make_sys_operation(tmp_path)
+    workspace = Workspace(root_path=str(tmp_path))
+    agent = _make_agent(sys_operation, workspace)
+
+    rail = ContextProcessorRail(preset=True)
+    await agent.register_rail(rail)
+    await agent.ensure_initialized()
+
+    mock_session = Mock()
+    mock_session.get_state.return_value = 1  # below threshold (2)
+
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(messages=[]),
+        session=mock_session,
+    )
+
+    # Should not raise.
+    await rail.before_model_call(ctx)
+
+    # No reset of the counter happened (we only reset when we bail out).
+    reset_calls = [
+        call for call in mock_session.update_state.call_args_list
+        if call.args and call.args[0] == {LOOP_COMPACT_BAILOUT_STATE_KEY: 0}
+    ]
+    assert reset_calls == []
+
+
+@pytest.mark.asyncio
+async def test_before_model_call_no_bailout_when_threshold_zero(tmp_path: Path):
+    """bailout_threshold=0 disables the bail-out even if the counter is high."""
+    sys_operation = _make_sys_operation(tmp_path)
+    workspace = Workspace(root_path=str(tmp_path))
+    agent = _make_agent(sys_operation, workspace)
+
+    rail = ContextProcessorRail(
+        preset=True,
+        processors=[("ReasoningToolLoopCompactProcessor", {"bailout_threshold": 0})],
+    )
+    await agent.register_rail(rail)
+    await agent.ensure_initialized()
+
+    mock_session = Mock()
+    mock_session.get_state.return_value = 999  # would trip any positive threshold
+
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(messages=[]),
+        session=mock_session,
+    )
+
+    # Should not raise because the bail-out is disabled.
+    await rail.before_model_call(ctx)
+
+
+@pytest.mark.asyncio
+async def test_before_invoke_resets_bailout_counter(tmp_path: Path):
+    """before_invoke should reset the loop counter to 0 at the start of an invoke."""
+    sys_operation = _make_sys_operation(tmp_path)
+    workspace = Workspace(root_path=str(tmp_path))
+    agent = _make_agent(sys_operation, workspace)
+    await agent.ensure_initialized()
+
+    rail = ContextProcessorRail()
+
+    mock_session = Mock()
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=ModelCallInputs(messages=[]),
+        session=mock_session,
+        context=_MockModelContext(messages=[]),
+    )
+
+    await rail.before_invoke(ctx)
+
+    mock_session.update_state.assert_any_call({LOOP_COMPACT_BAILOUT_STATE_KEY: 0})
 
