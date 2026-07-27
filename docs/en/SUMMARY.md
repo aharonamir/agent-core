@@ -35,6 +35,7 @@
     - [Overview](2.Development%20Guide/Agent%20Teams/Overview.md)
     - [AgentTeams](2.Development%20Guide/Agent%20Teams/AgentTeams.md)
     - [Team Skill Evolution](2.Development%20Guide/Agent%20Teams/Team%20Skill%20Evolution.md)
+    - [Team Verification](2.Development%20Guide/Agent%20Teams/Team%20Verification.md)
   - [Advanced Usage](2.Development%20Guide/Advanced%20Usage/README.md)
     - [Session](2.Development%20Guide/Advanced%20Usage/Session/README.md)
       - [Overview](2.Development%20Guide/Advanced%20Usage/Session/Overview.md)
