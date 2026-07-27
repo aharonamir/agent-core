@@ -21,6 +21,10 @@ from typing import (
     Optional,
 )
 
+from openjiuwen.agent_teams.context import (
+    reset_session_id,
+    set_session_id,
+)
 from openjiuwen.agent_teams.interaction import (
     DeliverResult,
     ExternalTeamEvent,
@@ -59,6 +63,7 @@ from openjiuwen.agent_teams.runtime.pool import (
     RuntimeState,
     TeamRuntimePool,
 )
+from openjiuwen.agent_teams.kv_cache import kv_cache_hooks
 from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.tools.database import DatabaseConfig
 from openjiuwen.agent_teams.worktree.session_cleanup import remove_session_worktrees
@@ -274,6 +279,10 @@ class TeamRuntimeManager:
             already_finalized = (
                 current_status is not None and current_status in TeamRuntimeManager._MEMBER_FINALIZED_STATUSES
             )
+
+            async def _evict_member() -> None:
+                await kv_cache_hooks.evict_member(agent, reason="member-shutdown")
+
             if already_finalized:
                 # External party (leader stop/pause, shutdown_self) already
                 # wrote a terminal/quiescent status. Just close the kernel.
@@ -282,14 +291,23 @@ class TeamRuntimeManager:
                     member_name,
                     current_status.value if current_status is not None else None,
                 )
-                await agent.stop_coordination()
+                if (
+                    current_status is MemberStatus.SHUTDOWN
+                    and await kv_cache_hooks.has_manageable_member_binding(agent)
+                ):
+                    await agent.stop_coordination(on_quiesced=_evict_member)
+                else:
+                    await agent.stop_coordination()
                 return
             if current_status == MemberStatus.SHUTDOWN_REQUESTED:
                 team_logger.info(
                     "finalize_member: shutting down team member {} on request",
                     member_name,
                 )
-                await agent.stop_coordination()
+                if await kv_cache_hooks.has_manageable_member_binding(agent):
+                    await agent.stop_coordination(on_quiesced=_evict_member)
+                else:
+                    await agent.stop_coordination()
                 if member is not None:
                     await member.update_status(MemberStatus.SHUTDOWN)
                 return
@@ -298,6 +316,7 @@ class TeamRuntimeManager:
                 member_name,
             )
             await agent.pause_coordination()
+            await kv_cache_hooks.mark_ready_resident(agent)
             if member is not None:
                 await member.update_status(MemberStatus.READY)
         except Exception as exc:
@@ -666,7 +685,15 @@ class TeamRuntimeManager:
         entry = await self._resolve_entry(team_name=team_name, session_id=session_id)
         if entry is None:
             return None
-        return create_monitor(entry.agent, hide_dm=hide_dm)
+        # SDK/CLI consumers may call this from an asyncio task whose inherited
+        # context belongs to another session. Bind the already-resolved target
+        # session while the factory captures it; TeamMonitor rebinds that
+        # captured value around each later database query.
+        token = set_session_id(session_id)
+        try:
+            return create_monitor(entry.agent, hide_dm=hide_dm)
+        finally:
+            reset_session_id(token)
 
     async def list_active_teams(self) -> list["ActiveTeamInfo"]:
         """Return read-only snapshots of every team currently in the pool.

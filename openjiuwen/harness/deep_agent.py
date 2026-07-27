@@ -120,6 +120,9 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import (
 )
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.prompts.sections.identity import build_identity_section
+from openjiuwen.harness.prompts.sections.prompt_attachments import (
+    build_prompt_attachments_section,
+)
 from openjiuwen.harness.resources import (
     LoadRecord,
     find_expert_harness_manifest,
@@ -368,6 +371,8 @@ class DeepAgent(BaseAgent):
         )
         if config.context_engine_config is not None:
             new_react_config.context_engine_config = config.context_engine_config
+        if config.kv_cache_affinity_config is not None:
+            new_react_config.kv_cache_affinity_config = config.kv_cache_affinity_config
         self._react_agent.configure(new_react_config)
         self._sync_prompt_builder_references()
         logger.info("[DeepAgent] Model configuration hot reloaded")
@@ -436,6 +441,7 @@ class DeepAgent(BaseAgent):
             ))
         else:
             prompt_builder.add_section(build_identity_section(language))
+        prompt_builder.add_section(build_prompt_attachments_section(language))
         prompt = prompt_builder.build()
         new_react_config = self._react_agent.config.model_copy()
         new_react_config.prompt_template = [{"role": "system", "content": prompt}]
@@ -802,6 +808,8 @@ class DeepAgent(BaseAgent):
         )
         if cfg.context_engine_config is not None:
             react_config.context_engine_config = cfg.context_engine_config
+        if cfg.kv_cache_affinity_config is not None:
+            react_config.kv_cache_affinity_config = cfg.kv_cache_affinity_config
         react_config.workspace = cfg.workspace
         if cfg.sys_operation is not None:
             react_config.sys_operation_id = cfg.sys_operation.id
@@ -821,6 +829,7 @@ class DeepAgent(BaseAgent):
             ))
         else:
             prompt_builder.add_section(build_identity_section(language))
+        prompt_builder.add_section(build_prompt_attachments_section(language))
         prompt = prompt_builder.build()
         react_config.prompt_template = [{"role": "system", "content": prompt}]
 
@@ -1241,6 +1250,7 @@ class DeepAgent(BaseAgent):
         if isinstance(inputs, dict):
             query = inputs.get("query", "")
             conversation_id = inputs.get("conversation_id")
+            parent_session_id = inputs.get("parent_session_id")
             run = inputs.get("run", {})
             run_kind = None
             run_context = None
@@ -1271,11 +1281,13 @@ class DeepAgent(BaseAgent):
         elif isinstance(inputs, str):
             query = inputs
             conversation_id = None
+            parent_session_id = None
             run_kind = None
             run_context = None
         elif isinstance(inputs, InteractiveInput):
             query = inputs
             conversation_id = None
+            parent_session_id = None
             run_kind = None
             run_context = None
         else:
@@ -1288,7 +1300,8 @@ class DeepAgent(BaseAgent):
             query=query,
             conversation_id=conversation_id,
             run_kind=run_kind,
-            run_context=run_context
+            run_context=run_context,
+            parent_session_id=parent_session_id,
         )
         return invoke_inputs
 
@@ -1334,6 +1347,8 @@ class DeepAgent(BaseAgent):
         effective_inputs: Dict[str, Any] = {"query": invoke_inputs.query}
         if invoke_inputs.conversation_id is not None:
             effective_inputs["conversation_id"] = invoke_inputs.conversation_id
+        if invoke_inputs.parent_session_id is not None:
+            effective_inputs["parent_session_id"] = invoke_inputs.parent_session_id
         if invoke_inputs.run_kind is not None:
             effective_inputs["run_kind"] = invoke_inputs.run_kind
         if invoke_inputs.run_context is not None:
@@ -3040,7 +3055,21 @@ class DeepAgent(BaseAgent):
         expected_run_kind: Optional[str] = None,
         expected_goal_id: Optional[str] = None,
         expected_revision: Optional[int] = None,
+        wait_timeout: float = 1.5,
     ) -> None:
+        """Cancel the in-flight interaction round.
+
+        Order mirrors NativeHarness hard-cancel intent, with a bounded wait so
+        goal overwrite/clear are not blocked for minutes on an unresponsive
+        streaming LLM ``await``:
+
+        1. ``abort()`` first — arm coordinator abort / cancel stream_process.
+        2. Cancel ``_interaction_round_task`` so the supervisor is not stuck in
+           ``wait_round_completion``.
+        3. ``cancel_task`` with a short timeout (shielded); if the exec task is
+           still draining LLM I/O, continue without waiting and let cancel
+           finish in the background.
+        """
         active = self._active_interaction_round
         if active is None:
             return
@@ -3052,16 +3081,51 @@ class DeepAgent(BaseAgent):
             return
 
         logger.info("[DeepAgent] cancelling %s round: %s", active.run_kind, reason)
+        task_id = active.task_id
         controller = self.loop_controller
         scheduler = getattr(controller, "task_scheduler", None) if controller else None
-        if active.task_id and scheduler is not None:
-            with suppress(Exception):
-                await scheduler.cancel_task(active.task_id)
+
+        # 1) Signal abort before waiting on scheduler cancel.
         with suppress(Exception):
             await self.abort(self._interaction_session)
-        task = self._interaction_round_task
-        if task is not None and task is not asyncio.current_task() and not task.done():
-            task.cancel()
+
+        # 2) Unblock supervisor / wait_round_completion promptly.
+        round_task = self._interaction_round_task
+        if (
+            round_task is not None
+            and round_task is not asyncio.current_task()
+            and not round_task.done()
+        ):
+            round_task.cancel()
+
+        # 3) Bound the wait for the scheduler exec task (often stuck in LLM I/O).
+        if task_id and scheduler is not None:
+            cancel_wait = asyncio.create_task(
+                scheduler.cancel_task(task_id),
+                name=f"deepagent-cancel-task-{task_id[:12]}",
+            )
+            try:
+                await asyncio.wait_for(asyncio.shield(cancel_wait), timeout=wait_timeout)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[DeepAgent] cancel_task timed out after %.1fs "
+                    "(reason=%s task_id=%s); continuing without waiting for LLM",
+                    wait_timeout,
+                    reason,
+                    task_id,
+                )
+            except Exception:
+                logger.debug(
+                    "[DeepAgent] cancel_task raised during round cancel "
+                    "(reason=%s task_id=%s)",
+                    reason,
+                    task_id,
+                    exc_info=True,
+                )
+                if not cancel_wait.done():
+                    cancel_wait.cancel()
+                    with suppress(asyncio.CancelledError, Exception):
+                        await cancel_wait
 
     def _notify_work(self) -> None:
         self._interaction_wakeup.set()
