@@ -6,11 +6,13 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
 from openjiuwen.agent_teams.schema.blueprint import DeepAgentSpec, TeamAgentSpec
+from openjiuwen.agent_teams.schema.build_context import BuildContext
 from openjiuwen.agent_teams.schema.status import MemberMode
 from openjiuwen.agent_teams.schema.team import TeamLifecycle, TeamRole, TeamRuntimeContext, TeamSpec
 from openjiuwen.agent_teams.spawn import external_cli_spawn as spawn_mod
@@ -59,9 +61,10 @@ class _FakeRuntime:
 
 
 class _FakeTeamAgent:
-    def __init__(self, spec: TeamAgentSpec) -> None:
+    def __init__(self, spec: TeamAgentSpec, team_session: Any | None = None) -> None:
         self.spec = spec
         self.team_backend = None
+        self.session_manager = SimpleNamespace(team_session=team_session)
 
 
 async def _empty_outputs() -> Any:
@@ -216,6 +219,180 @@ async def test_external_cli_spawn_resume_passes_backend_flag(monkeypatch):
 
     assert build_kwargs["resume_external_backend"] is True
     assert run_inputs == {"query": ""}
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_codex_spawn_passes_stable_member_agent_id(monkeypatch):
+    """Codex runtime addresses its own checkpoint with the TeamAgent card id."""
+    runtime = _FakeRuntime()
+    started = asyncio.Event()
+    build_kwargs: dict[str, Any] = {}
+
+    async def _fake_build_cli_runtime(*args: Any, **kwargs: Any) -> _FakeRuntime:
+        _ = args
+        build_kwargs.update(kwargs)
+        return runtime
+
+    async def _fake_run_agent_team(*args: Any, **kwargs: Any) -> None:
+        _ = args, kwargs
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(spawn_mod, "build_cli_runtime", _fake_build_cli_runtime)
+    monkeypatch.setattr(Runner, "run_agent_team", _fake_run_agent_team)
+
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        team_name="ext_team",
+        display_name="Ext",
+        lifecycle=TeamLifecycle.PERSISTENT,
+        teammate_mode=MemberMode.BUILD_MODE,
+        external_cli_agents=[
+            {
+                "cli_agent": "codex",
+                "codex_bin": "/opt/codex",
+                "codex_turn_idle_timeout_s": 45.0,
+                "codex_turn_idle_retries": 2,
+            }
+        ],
+    )
+    agent = _FakeTeamAgent(spec)
+    ctx = TeamRuntimeContext(
+        role=TeamRole.TEAMMATE,
+        member_name="codex-1",
+        cli_agent="codex",
+        team_spec=TeamSpec(team_name="ext_team", display_name="Ext"),
+    )
+
+    handle = await spawn_mod.external_cli_spawn(
+        agent,
+        ctx,
+        session_id="sess-1",
+        resume_external_backend=True,
+    )
+    await started.wait()
+
+    assert build_kwargs["member_agent_id"] == "ext_team_codex-1"
+    assert build_kwargs["resume_external_backend"] is True
+    assert build_kwargs["codex_bin"] == "/opt/codex"
+    assert build_kwargs["codex_turn_idle_timeout_s"] == 45.0
+    assert build_kwargs["codex_turn_idle_retries"] == 2
+
+    await handle.force_kill()
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_external_cli_spawn_resolves_worktree_cwd_and_add_dirs(monkeypatch, tmp_path):
+    """External members use worktree cwd and expose project/team roots as extra dirs."""
+    runtime = _FakeRuntime()
+    started = asyncio.Event()
+    build_kwargs: dict[str, Any] = {}
+
+    async def _fake_build_cli_runtime(*args: Any, **kwargs: Any) -> _FakeRuntime:
+        _ = args
+        build_kwargs.update(kwargs)
+        return runtime
+
+    async def _fake_run_agent_team(*args: Any, **kwargs: Any) -> None:
+        _ = args, kwargs
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(spawn_mod, "build_cli_runtime", _fake_build_cli_runtime)
+    monkeypatch.setattr(Runner, "run_agent_team", _fake_run_agent_team)
+
+    team_workspace = str(tmp_path / "team-workspace")
+    project_dir = str(tmp_path / "project")
+    worktree_path = str(tmp_path / "worktree")
+
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        team_name="ext_team",
+        display_name="Ext",
+        lifecycle=TeamLifecycle.PERSISTENT,
+        teammate_mode=MemberMode.BUILD_MODE,
+        workspace={"enabled": True, "root_path": team_workspace},
+        build_context=BuildContext(project_dir=project_dir),
+        external_cli_agents=[{"cli_agent": "claude"}],
+    )
+    team_spec = TeamSpec(team_name="ext_team", display_name="Ext")
+    ctx = TeamRuntimeContext(
+        role=TeamRole.TEAMMATE,
+        member_name="claude-1",
+        cli_agent="claude",
+        team_spec=team_spec,
+        worktree_path=worktree_path,
+    )
+
+    handle = await spawn_mod.external_cli_spawn(
+        _FakeTeamAgent(spec),
+        ctx,
+        session_id="sess-1",
+    )
+    await started.wait()
+    await handle.force_kill()
+
+    assert build_kwargs["cwd"] == worktree_path
+    assert build_kwargs["add_dirs"] == (project_dir, team_workspace)
+
+
+@pytest.mark.asyncio
+@pytest.mark.level0
+async def test_external_cli_spawn_explicit_cwd_wins_and_others_become_add_dirs(monkeypatch, tmp_path):
+    """Explicit external cwd has priority; other candidate roots remain accessible."""
+    runtime = _FakeRuntime()
+    started = asyncio.Event()
+    build_kwargs: dict[str, Any] = {}
+
+    async def _fake_build_cli_runtime(*args: Any, **kwargs: Any) -> _FakeRuntime:
+        _ = args
+        build_kwargs.update(kwargs)
+        return runtime
+
+    async def _fake_run_agent_team(*args: Any, **kwargs: Any) -> None:
+        _ = args, kwargs
+        started.set()
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(spawn_mod, "build_cli_runtime", _fake_build_cli_runtime)
+    monkeypatch.setattr(Runner, "run_agent_team", _fake_run_agent_team)
+
+    team_workspace = str(tmp_path / "team-workspace")
+    project_dir = str(tmp_path / "project")
+    worktree_path = str(tmp_path / "worktree")
+    custom_cwd = str(tmp_path / "custom")
+
+    spec = TeamAgentSpec(
+        agents={"leader": DeepAgentSpec()},
+        team_name="ext_team",
+        display_name="Ext",
+        lifecycle=TeamLifecycle.PERSISTENT,
+        teammate_mode=MemberMode.BUILD_MODE,
+        workspace={"enabled": True, "root_path": team_workspace},
+        build_context=BuildContext(project_dir=project_dir),
+        external_cli_agents=[{"cli_agent": "claude", "cwd": custom_cwd}],
+    )
+    team_spec = TeamSpec(team_name="ext_team", display_name="Ext")
+    ctx = TeamRuntimeContext(
+        role=TeamRole.TEAMMATE,
+        member_name="claude-1",
+        cli_agent="claude",
+        team_spec=team_spec,
+        worktree_path=worktree_path,
+    )
+
+    handle = await spawn_mod.external_cli_spawn(
+        _FakeTeamAgent(spec),
+        ctx,
+        session_id="sess-1",
+    )
+    await started.wait()
+    await handle.force_kill()
+
+    assert build_kwargs["cwd"] == custom_cwd
+    assert build_kwargs["add_dirs"] == (worktree_path, project_dir, team_workspace)
 
 
 @pytest.mark.asyncio

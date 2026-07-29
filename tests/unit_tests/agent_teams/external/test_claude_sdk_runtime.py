@@ -153,7 +153,12 @@ class _FakeClaudeSdk:
                 ],
             )
             yield _FakeClaudeSdk.UserMessage(
-                content=[_FakeClaudeSdk.ToolResultBlock(tool_use_id="toolu_1", content="file body")],
+                content=[
+                    _FakeClaudeSdk.ToolResultBlock(
+                        tool_use_id="toolu_1",
+                        content=[{"type": "text", "text": "file body"}],
+                    ),
+                ],
             )
             yield _FakeClaudeSdk.UserMessage(
                 content="prompt echo",
@@ -277,6 +282,8 @@ async def test_build_cli_runtime_uses_claude_sdk_backend(fake_claude_sdk):
     try:
         runtime = await spawn_mod.build_cli_runtime(
             _ctx(),
+            cwd="/project",
+            add_dirs=("/team-workspace",),
             mcp_server_command=("openjiuwen-team-mcp",),
             extra_env={"EXTRA": "1"},
             system_prompt="persona",
@@ -286,6 +293,8 @@ async def test_build_cli_runtime_uses_claude_sdk_backend(fake_claude_sdk):
 
     assert isinstance(runtime, ClaudeSdkRuntime)
     options = runtime._options
+    assert options.cwd == "/project"
+    assert options.add_dirs == ["/team-workspace"]
     assert options.permission_mode == "bypassPermissions"
     assert options.system_prompt == {"type": "preset", "append": "persona"}
     assert options.env["EXTRA"] == "1"
@@ -335,21 +344,64 @@ async def test_claude_sdk_runtime_emits_native_team_chunks(fake_claude_sdk):
     assert chunks[0].payload == {"content": "done", "result_type": "answer"}
     assert chunks[1].payload == {"content": "reasoning", "result_type": "answer"}
     assert chunks[2].payload == {
-        "tool_name": "Read",
-        "tool_args": {"file_path": "a.py"},
+        "name": "Read",
+        "arguments": '{"file_path": "a.py"}',
         "tool_call_id": "toolu_1",
     }
     assert chunks[3].payload == {
         "tool_name": "",
-        "tool_args": "",
-        "tool_result": "file body",
+        "result": "file body",
         "tool_call_id": "toolu_1",
     }
     assert chunks[4].payload == {
         "tool_name": "",
-        "tool_args": "",
-        "tool_result": {"ok": True},
+        "result": {"ok": True},
         "tool_call_id": "toolu_2",
+    }
+
+
+@pytest.mark.level0
+def test_claude_sdk_runtime_skips_duplicate_tool_result_payload(fake_claude_sdk: Any) -> None:
+    from openjiuwen.agent_teams.external.cli_agent.claude.runtime import _iter_sdk_chunks
+
+    message = _FakeClaudeSdk.UserMessage(
+        content=[_FakeClaudeSdk.ToolResultBlock(tool_use_id="toolu_1", content="visible result")],
+        parent_tool_use_id="toolu_1",
+        tool_use_result={"duplicated": True},
+    )
+
+    chunks = _iter_sdk_chunks(message, 0)
+
+    assert len(chunks) == 1
+    assert chunks[0].payload == {
+        "tool_name": "",
+        "result": "visible result",
+        "tool_call_id": "toolu_1",
+    }
+
+
+@pytest.mark.level0
+def test_claude_sdk_runtime_joins_text_tool_result_blocks(fake_claude_sdk: Any) -> None:
+    from openjiuwen.agent_teams.external.cli_agent.claude.runtime import _iter_sdk_chunks
+
+    message = _FakeClaudeSdk.UserMessage(
+        content=[
+            _FakeClaudeSdk.ToolResultBlock(
+                tool_use_id="toolu_1",
+                content=[
+                    {"type": "text", "text": "first"},
+                    {"type": "text", "text": "second"},
+                ],
+            ),
+        ],
+    )
+
+    chunks = _iter_sdk_chunks(message, 0)
+
+    assert chunks[0].payload == {
+        "tool_name": "",
+        "result": "first\nsecond",
+        "tool_call_id": "toolu_1",
     }
 
 
@@ -375,6 +427,7 @@ def test_claude_sdk_missing_dependency_reports_clear_error(monkeypatch):
         spawn_mod.build_claude_runtime(
             member_name="claude-1",
             cwd=None,
+            add_dirs=(),
             env={"OPENJIUWEN_TEAM_JOIN": "{}"},
             inject_mcp=True,
             mcp_server_name="openjiuwen-team",
