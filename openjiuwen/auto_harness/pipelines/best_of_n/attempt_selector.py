@@ -7,7 +7,7 @@ from __future__ import annotations
 import logging
 from typing import Sequence
 
-from openjiuwen.auto_harness.infra.attempt_scorer import (
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer import (
     ScoredAttempt,
 )
 

@@ -21,7 +21,10 @@ from openjiuwen.auto_harness.experience.experience_store import (
 from openjiuwen.auto_harness.infra.ci_gate_runner import (
     CIGateRunner,
 )
-from openjiuwen.auto_harness.infra.best_of_n import (
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer import (
+    AttemptScorer,
+)
+from openjiuwen.auto_harness.pipelines.best_of_n.controller import (
     BestOfNController,
 )
 from openjiuwen.auto_harness.infra.fix_loop import (
@@ -106,6 +109,49 @@ def _infer_agent_from_rails(
     return None
 
 
+class _BestOfNCIRunner:
+    """Adapts CIGateRunner to AttemptScorer's expected interface.
+
+    AttemptScorer.score() calls ``ci_runner.run("test")`` and expects
+    result dict with ``gates[].{name, tests_passed, tests_total}``.
+    CIGateRunner uses a different gate-based model, so we wrap it.
+    """
+
+    def __init__(self, ci_gate: CIGateRunner) -> None:
+        self._ci_gate = ci_gate
+
+    async def run(self, action: str) -> dict[str, Any]:
+        result = await self._ci_gate.run("all")
+        passed = result.get("passed", False)
+        return {
+            "passed": passed,
+            "gates": [
+                {
+                    "name": "test",
+                    "tests_passed": 1 if passed else 0,
+                    "tests_total": 1,
+                }
+            ],
+            "errors": result.get("errors", ""),
+        }
+
+
+def _best_of_n_ci_runner_factory(
+    ws: str,
+    *,
+    config: AutoHarnessConfig,
+) -> _BestOfNCIRunner:
+    """Create a CI runner for a specific workspace clone."""
+    return _BestOfNCIRunner(
+        CIGateRunner(
+            workspace=ws,
+            config_path=config.ci_gate_config,
+            python_executable=config.resolve_ci_gate_python_executable(),
+            install_command=config.ci_gate_install_command,
+        ),
+    )
+
+
 class AutoHarnessOrchestrator:
     """Session controller and top-level pipeline dispatcher."""
 
@@ -168,6 +214,11 @@ class AutoHarnessOrchestrator:
             n_attempts=config.best_of_n_attempts,
             timeout_per_attempt=(
                 config.best_of_n_timeout_per_attempt
+            ),
+            scorer=AttemptScorer(
+                ci_runner_factory=lambda ws: _best_of_n_ci_runner_factory(
+                    ws, config=config
+                ),
             ),
         )
         self.worktree_mgr = WorktreeManager(config)

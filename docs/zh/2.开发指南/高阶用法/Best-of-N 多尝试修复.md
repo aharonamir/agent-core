@@ -72,9 +72,9 @@ MetaVerifyStage
 可以插入自定义评分器或选择器：
 
 ```python
-from openjiuwen.auto_harness.infra.best_of_n import BestOfNController
-from openjiuwen.auto_harness.infra.attempt_scorer import AttemptScorer
-from openjiuwen.auto_harness.infra.attempt_selector import AttemptSelector
+from openjiuwen.auto_harness.pipelines.best_of_n.controller import BestOfNController
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer import AttemptScorer
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_selector import AttemptSelector
 
 class CoverageScorer(AttemptScorer):
     async def score(self, workspace, ci_runner=None):
@@ -97,9 +97,9 @@ ctrl = BestOfNController(
 
 | 文件 | 用途 |
 |------|------|
-| `openjiuwen.auto_harness.infra.attempt_scorer` | 按测试通过数、diff 大小、lint 错误评分工作空间。 |
-| `openjiuwen.auto_harness.infra.attempt_selector` | 从已评分尝试中选择最优候选。 |
+| `openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer` | 按测试通过数、diff 大小、lint 错误评分工作空间。 |
+| `openjiuwen.auto_harness.pipelines.best_of_n.attempt_selector` | 从已评分尝试中选择最优候选。 |
 | `openjiuwen.auto_harness.infra.workspace_cloner` | 使用 `shutil.copytree` 克隆工作空间 N 次。 |
-| `openjiuwen.auto_harness.infra.best_of_n` | `BestOfNController` — 编排完整 best-of-N 流水线。 |
+| `openjiuwen.auto_harness.pipelines.best_of_n.controller` | `BestOfNController` — 编排完整 best-of-N 流水线。 |
 | `openjiuwen.auto_harness.infra.fix_loop` | 经典两阶段 CI 修复循环（增量修复）。 |
 | `openjiuwen.auto_harness.stages.verify` | 验证阶段分发 — 在修复循环与 best-of-N 之间选择。 |
