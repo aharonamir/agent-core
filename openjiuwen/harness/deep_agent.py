@@ -2251,18 +2251,6 @@ class DeepAgent(BaseAgent):
 
         invoke_inputs = self._normalize_inputs(inputs)
 
-        # Multi-rollout: when enabled, run N isolated parallel attempts
-        # and return the best result instead of the normal single path.
-        if (
-            self._deep_config is not None
-            and self._deep_config.multi_rollout is not None
-            and self._deep_config.multi_rollout.enabled
-        ):
-            executor = MultiRolloutExecutor(
-                self, self._deep_config.multi_rollout
-            )
-            return await executor.invoke(invoke_inputs, session)
-
         ctx = AgentCallbackContext(agent=self, inputs=invoke_inputs, session=session)
 
         self._invoke_active = True
@@ -2273,6 +2261,16 @@ class DeepAgent(BaseAgent):
                 AgentCallbackEvent.AFTER_INVOKE,
             ):
                 if (
+                    self._deep_config is not None
+                    and self._deep_config.multi_rollout is not None
+                    and self._deep_config.multi_rollout.enabled
+                    and self._deep_config.multi_rollout.n_rollouts > 1
+                ):
+                    executor = MultiRolloutExecutor(
+                        self, self._deep_config.multi_rollout
+                    )
+                    result = await executor.invoke(invoke_inputs, session)
+                elif (
                     self._deep_config is not None
                     and self._deep_config.enable_task_loop
                     and not self._is_resume_input(invoke_inputs)
