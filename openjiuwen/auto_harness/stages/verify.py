@@ -25,8 +25,9 @@ from openjiuwen.auto_harness.infra.parsers import (
 from openjiuwen.auto_harness.infra.ci_gate_runner import (
     decode_stdout,
 )
-from openjiuwen.auto_harness.infra.best_of_n import (
+from openjiuwen.auto_harness.pipelines.best_of_n.controller import (
     BestOfNController,
+    BestOfNResult,
 )
 from openjiuwen.auto_harness.infra.runtime_extension_static_checks import (
     ExtStaticCheckResult,
@@ -459,15 +460,6 @@ def _start_best_of_n(
         async for chunk in agent.stream({"query": prompt}):
             await chunk_queue.put(chunk)
 
-    async def _ci_runner() -> Any:
-        result = await ci_gate.run("all")
-        last_ci_result.clear()
-        last_ci_result.update(result)
-        return _CIResult(
-            passed=result.get("passed", False),
-            errors=result.get("errors", ""),
-        )
-
     fix_done = asyncio.Event()
 
     async def _run_best_of_n() -> Any:
@@ -475,12 +467,15 @@ def _start_best_of_n(
             result = await best_of_n_ctrl.run(
                 workspace=Path(workspace),
                 attempt_factory=_attempt_factory,
-                ci_runner=_ci_runner,
             )
             success = result.success or (
                 result.best is not None
                 and result.best.score.tests_passed > 0
             )
+            if success:
+                final_ci = await ci_gate.run("all")
+                last_ci_result.clear()
+                last_ci_result.update(final_ci)
             best_idx = result.best.attempt_index if result.best else None
             await _emit_message(
                 "[BestOfN] "

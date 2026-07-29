@@ -8,29 +8,17 @@ import tempfile
 from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 
-from openjiuwen.auto_harness.infra.attempt_scorer import (
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer import (
     AttemptScore,
     AttemptScorer,
     ScoredAttempt,
 )
-from openjiuwen.auto_harness.infra.attempt_selector import BestOfNSelector
-from openjiuwen.auto_harness.infra.best_of_n import (
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_selector import BestOfNSelector
+from openjiuwen.auto_harness.pipelines.best_of_n.controller import (
     BestOfNController,
     BestOfNResult,
 )
-from openjiuwen.auto_harness.infra.workspace_cloner import WorkspaceCloner
-
-
-class _FakeCIRunner:
-    def __init__(self, passed: bool = False):
-        self._passed = passed
-
-    async def run(self, action: str) -> dict:
-        return {
-            "passed": self._passed,
-            "gates": [],
-            "errors": "",
-        }
+from openjiuwen.auto_harness.infra.workspace_cloner import WorkspaceCloner  # stays in infra
 
 
 class TestBestOfNController(IsolatedAsyncioTestCase):
@@ -47,13 +35,9 @@ class TestBestOfNController(IsolatedAsyncioTestCase):
             async def attempt_factory(path: Path, seed: int):
                 pass
 
-            async def ci_runner():
-                return _FakeCIRunner(passed=False)
-
             result = await ctrl.run(
                 workspace=workspace,
                 attempt_factory=attempt_factory,
-                ci_runner=ci_runner,
             )
 
             assert isinstance(result, BestOfNResult)
@@ -88,13 +72,9 @@ class TestBestOfNController(IsolatedAsyncioTestCase):
             async def attempt_factory(path: Path, seed: int):
                 pass
 
-            async def ci_runner():
-                return _FakeCIRunner(passed=False)
-
             result = await ctrl.run(
                 workspace=workspace,
                 attempt_factory=attempt_factory,
-                ci_runner=ci_runner,
             )
 
             assert result.best is not None
@@ -117,13 +97,9 @@ class TestBestOfNController(IsolatedAsyncioTestCase):
                 marker = path / "marker.txt"
                 marker.write_text(f"attempt-{seed}")
 
-            async def ci_runner():
-                return _FakeCIRunner(passed=False)
-
             result = await ctrl.run(
                 workspace=workspace,
                 attempt_factory=attempt_factory,
-                ci_runner=ci_runner,
             )
 
             # Best workspace should be promoted back
@@ -146,13 +122,9 @@ class TestBestOfNController(IsolatedAsyncioTestCase):
             async def attempt_factory(path: Path, seed: int):
                 pass
 
-            async def ci_runner():
-                return _FakeCIRunner(passed=False)
-
             result = await ctrl.run(
                 workspace=workspace,
                 attempt_factory=attempt_factory,
-                ci_runner=ci_runner,
             )
 
             # Only the winning workspace should exist in parent dir

@@ -8,7 +8,7 @@ from pathlib import Path
 from unittest import IsolatedAsyncioTestCase
 from unittest.mock import AsyncMock
 
-from openjiuwen.auto_harness.infra.attempt_scorer import (
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer import (
     AttemptScore,
     AttemptScorer,
 )

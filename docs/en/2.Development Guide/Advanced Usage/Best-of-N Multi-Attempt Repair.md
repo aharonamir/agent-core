@@ -77,9 +77,9 @@ MetaVerifyStage
 You can plug in custom scorers or selectors:
 
 ```python
-from openjiuwen.auto_harness.infra.best_of_n import BestOfNController
-from openjiuwen.auto_harness.infra.attempt_scorer import AttemptScorer
-from openjiuwen.auto_harness.infra.attempt_selector import AttemptSelector
+from openjiuwen.auto_harness.pipelines.best_of_n.controller import BestOfNController
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer import AttemptScorer
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_selector import AttemptSelector
 
 class CoverageScorer(AttemptScorer):
     async def score(self, workspace, ci_runner=None):
@@ -102,9 +102,9 @@ ctrl = BestOfNController(
 
 | File | Purpose |
 |------|---------|
-| `openjiuwen.auto_harness.infra.attempt_scorer` | Score a workspace by test passes, diff size, lint errors. |
-| `openjiuwen.auto_harness.infra.attempt_selector` | Select the best candidate from scored attempts. |
+| `openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer` | Score a workspace by test passes, diff size, lint errors. |
+| `openjiuwen.auto_harness.pipelines.best_of_n.attempt_selector` | Select the best candidate from scored attempts. |
 | `openjiuwen.auto_harness.infra.workspace_cloner` | Clone a workspace N times using `shutil.copytree`. |
-| `openjiuwen.auto_harness.infra.best_of_n` | `BestOfNController` -- orchestrates the full pipeline. |
+| `openjiuwen.auto_harness.pipelines.best_of_n.controller` | `BestOfNController` -- orchestrates the full pipeline. |
 | `openjiuwen.auto_harness.infra.fix_loop` | Classic two-phase CI fix loop (incremental repairs). |
 | `openjiuwen.auto_harness.stages.verify` | Verify stage dispatch -- chooses between fix loop and best-of-N. |

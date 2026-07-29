@@ -18,12 +18,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Coroutine
 
-from openjiuwen.auto_harness.infra.attempt_scorer import (
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_scorer import (
     AttemptScorer,
     AttemptScore,
     ScoredAttempt,
 )
-from openjiuwen.auto_harness.infra.attempt_selector import (
+from openjiuwen.auto_harness.pipelines.best_of_n.attempt_selector import (
     AttemptSelector,
     BestOfNSelector,
 )
@@ -68,7 +68,9 @@ class BestOfNController:
     ) -> None:
         self._n = max(1, n_attempts)
         self._timeout = timeout_per_attempt
-        self._cloner = cloner or WorkspaceCloner()
+        self._cloner = cloner or WorkspaceCloner(
+            ignore_patterns=["__pycache__", "*.pyc", ".pytest_cache"],
+        )
         self._scorer = scorer or AttemptScorer()
         self._selector = selector or BestOfNSelector()
 
@@ -81,7 +83,6 @@ class BestOfNController:
         self,
         workspace: Path | str,
         attempt_factory: Callable[[Path, int], Coroutine[Any, Any, Any]],
-        ci_runner: Callable[[], Coroutine[Any, Any, Any]],
     ) -> BestOfNResult:
         """Execute the best-of-N pipeline.
 
@@ -89,9 +90,6 @@ class BestOfNController:
             workspace: Base workspace path (read-only reference).
             attempt_factory: ``async def attempt_factory(path: Path, seed: int)``.
                 Called once per clone.  Should run the fix agent inside *path*.
-            ci_runner: Callable that runs CI on the **current** workspace.
-        The controller temporarily ``chdir`` into each clone before
-        calling it.
 
         Returns:
             BestOfNResult with success flag and scored attempts.
