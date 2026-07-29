@@ -24,6 +24,8 @@ from typing import (
     cast,
 )
 
+import anyio
+
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.common.logging import logger
@@ -961,18 +963,26 @@ class DeepAgent(BaseAgent):
         # Initialize ContextVar CWD in the current asyncio Task context.
         # Each agent sets its own CWD unconditionally — ContextVar copies
         # are per-Task, so this won't affect the parent agent.
-        if self._deep_config and self._deep_config.workspace:
+        if self._deep_config and (self._deep_config.workspace or self._deep_config.cwd):
             from openjiuwen.core.sys_operation.cwd import init_cwd
 
-            init_root = self._deep_config.workspace.root_path or os.getcwd()
+            workspace = self._deep_config.workspace
+            workspace_root = (workspace.root_path if workspace else None) or os.getcwd()
             if self._inherited_artifact_root:
                 init_cwd(
                     self._inherited_artifact_root,
                     project_root=self._inherited_artifact_root,
-                    workspace=init_root,
+                    workspace=workspace_root,
                 )
             else:
-                init_cwd(init_root, workspace=init_root)
+                # cwd and workspace are separate layers: the workspace holds
+                # this agent's artifacts, cwd is where shell runs and relative
+                # paths resolve. They coincide unless the host says otherwise
+                # (team members run in the project dir / their worktree while
+                # keeping a private workspace).
+                cwd_root = self._deep_config.cwd or workspace_root
+                project_root = self._deep_config.project_root or cwd_root
+                init_cwd(cwd_root, project_root=project_root, workspace=workspace_root)
 
         await self._register_pending_mcps()
 
@@ -3103,8 +3113,9 @@ class DeepAgent(BaseAgent):
                 name=f"deepagent-cancel-task-{task_id[:12]}",
             )
             try:
-                await asyncio.wait_for(asyncio.shield(cancel_wait), timeout=wait_timeout)
-            except asyncio.TimeoutError:
+                with anyio.fail_after(wait_timeout, shield=True):
+                    await cancel_wait
+            except TimeoutError:
                 logger.warning(
                     "[DeepAgent] cancel_task timed out after %.1fs "
                     "(reason=%s task_id=%s); continuing without waiting for LLM",
