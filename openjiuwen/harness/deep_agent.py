@@ -2505,12 +2505,7 @@ class DeepAgent(BaseAgent):
                 AgentCallbackEvent.BEFORE_INVOKE,
                 AgentCallbackEvent.AFTER_INVOKE,
             ):
-                if (
-                    self._deep_config is not None
-                    and self._deep_config.multi_rollout is not None
-                    and self._deep_config.multi_rollout.enabled
-                    and self._deep_config.multi_rollout.n_rollouts > 1
-                ):
+                if self._use_multi_rollout():
                     executor = MultiRolloutExecutor(
                         self, self._deep_config.multi_rollout
                     )
@@ -2531,6 +2526,18 @@ class DeepAgent(BaseAgent):
             return result
         finally:
             self._invoke_active = False
+
+    def _use_multi_rollout(self) -> bool:
+        """Return True when the multi-rollout executor should be used.
+
+        Folds the multi-rollout conditions (config present, multi_rollout
+        configured, enabled, and more than one rollout requested) into one
+        boolean so the invoke() branch stays a single expression.
+        """
+        cfg = self._deep_config
+        if cfg is None or cfg.multi_rollout is None:
+            return False
+        return cfg.multi_rollout.enabled and cfg.multi_rollout.n_rollouts > 1
 
     async def stream(
         self,
