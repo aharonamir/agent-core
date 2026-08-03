@@ -17,12 +17,12 @@ from openjiuwen.core.context_engine.context.processor_state_recorder import (
 )
 from openjiuwen.core.context_engine.processor.base import ContextProcessor
 from openjiuwen.core.context_engine.token.base import TokenCounter
-from openjiuwen.core.context_engine.schema.config import ContextEngineConfig
+from openjiuwen.core.context_engine.schema.config import CompressionRecallConfig, ContextEngineConfig
 from openjiuwen.core.foundation.llm import BaseMessage, AssistantMessage
+from openjiuwen.core.foundation.kv_cache import first_changed_index
 from openjiuwen.core.foundation.tool import ToolInfo
-from openjiuwen.core.context_engine.base import ModelContext, ContextWindow, ContextStats
+from openjiuwen.core.context_engine.base import ContextWindowChange, ModelContext, ContextWindow, ContextStats
 from openjiuwen.core.context_engine.context.message_buffer import ContextMessageBuffer, OffloadMessageBuffer
-from openjiuwen.core.context_engine.context.kv_cache_manager import KVCacheManager
 from openjiuwen.core.runner.callback import lazy_callback_framework as _fw
 from openjiuwen.core.runner.callback.events import ContextEvents
 
@@ -75,6 +75,7 @@ class SessionModelContext(ModelContext):
         self._window_mutators = window_mutators if window_mutators is not None else []
         self._session_ref = session_ref
         self._default_dialogue_round = config.default_window_round_num
+        self._compression_recall_config = config.compression_recall_config.model_copy(deep=True)
         self._token_counter = token_counter
         self._processors = processors
         self._processor_state_recorder = ContextProcessorStateRecorder(
@@ -86,7 +87,7 @@ class SessionModelContext(ModelContext):
         self._processor_lock = asyncio.Lock()
         self._active_compression_in_progress = False
         self._last_context_window_access_at: float | None = None
-        self._kv_cache_manager = KVCacheManager(session_id) if config.enable_kv_cache_release else None
+        self._last_llm_bound_context_window: ContextWindow | None = None
         self._offload_message_buffer = OffloadMessageBuffer()
         self._configure_offload_message_buffer()
 
@@ -105,6 +106,9 @@ class SessionModelContext(ModelContext):
 
     def context_id(self) -> str:
         return self._context_id
+
+    def compression_recall_config(self) -> CompressionRecallConfig:
+        return self._compression_recall_config
 
     def last_context_window_access_at(self) -> float | None:
         return self._last_context_window_access_at
@@ -337,6 +341,59 @@ class SessionModelContext(ModelContext):
         messages = ContextUtils.ensure_context_message_ids(messages)
         self._message_buffer.set_messages(messages, with_history)
 
+    def detect_context_window_change(
+            self,
+            new_window: ContextWindow,
+    ) -> ContextWindowChange | None:
+        """
+        Compare the current LLM-bound window with the previous tracked window.
+
+        This method is an explicit KV cache diff primitive. Callers decide
+        whether any KV cache management path is enabled before invoking it.
+        """
+        old_window = self._last_llm_bound_context_window
+        self._last_llm_bound_context_window = new_window.model_copy(deep=True)
+        if old_window is None:
+            return None
+
+        old_messages = old_window.get_messages()
+        new_messages = new_window.get_messages()
+        old_tools = old_window.get_tools()
+        new_tools = new_window.get_tools()
+        msg_start = first_changed_index(old_messages, new_messages)
+        tools_start = first_changed_index(old_tools, new_tools)
+
+        # Tool definitions are serialized immediately after the system prompt.
+        # first_changed_index intentionally treats append-only lists as unchanged,
+        # which is correct for messages but not for tools: appending a tool moves
+        # every following conversation token. In that case invalidate the old
+        # message suffix following the system prompt. There is no old tool index
+        # to use as a legal old-window range for the appended item itself.
+        tools_appended = (
+            len(new_tools) > len(old_tools)
+            and new_tools[:len(old_tools)] == old_tools
+        )
+        if tools_appended:
+            first_context_message = len(old_window.system_messages)
+            if first_context_message < len(old_messages):
+                if msg_start is None:
+                    msg_start = first_context_message
+                else:
+                    msg_start = min(msg_start, first_context_message)
+            tools_start = None
+
+        if msg_start is None and tools_start is None:
+            return None
+
+        return ContextWindowChange(
+            old_messages=old_messages,
+            old_tools=old_tools,
+            msg_start=msg_start,
+            msg_end=len(old_messages) if msg_start is not None else None,
+            tools_start=tools_start,
+            tools_end=len(old_tools) if tools_start is not None else None,
+        )
+
     @_fw.emit_before(ContextEvents.CONTEXT_CLEARED, pass_args=False)
     async def clear_messages(self, with_history: bool = True):
         self.pop_messages(len(self), with_history=with_history)
@@ -497,8 +554,6 @@ class SessionModelContext(ModelContext):
                         f"Failed to mutate context window before KV release by using {mutator}, reason: {str(e)}"
                     )
             ContextUtils.validate_and_fix_context_window(window)
-            if self._kv_cache_manager:
-                await self._kv_cache_manager.release(window, **kwargs)
             window.statistic = self._stat_context_window(window)
             return window
 

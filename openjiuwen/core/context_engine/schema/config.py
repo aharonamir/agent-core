@@ -2,7 +2,22 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
 from typing import Dict, Optional
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, Field, model_validator
+
+
+class CompressionRecallConfig(BaseModel):
+    """Global configuration for archiving and recalling compressed context."""
+
+    enabled: bool = Field(default=False)
+    chunk_size_tokens: int = Field(default=3000, gt=0)
+    chunk_overlap_tokens: int = Field(default=300, gt=0)
+
+    @model_validator(mode="after")
+    def _validate_chunk_tokens(self) -> "CompressionRecallConfig":
+        if self.chunk_overlap_tokens >= self.chunk_size_tokens:
+            raise ValueError("chunk_overlap_tokens must be smaller than chunk_size_tokens")
+        return self
 
 
 class ContextEngineConfig(BaseModel):
@@ -31,14 +46,6 @@ class ContextEngineConfig(BaseModel):
         for round-based truncation. Must be > 0 if set; None (default) disables
         round-based windowing.
 
-    enable_kv_cache_release : bool, default False
-        Whether to release KV-cache for offloaded messages to reduce GPU memory
-        pressure. When enabled, the attention key-value tensors corresponding to
-        offloaded content are freed from GPU memory. The trade-off is that
-        reloading these messages requires recomputing the KV-cache from scratch,
-        increasing latency during recall. Recommended for long-running sessions
-        with tight memory constraints.
-
     enable_reload : bool, default False
         Whether to enable automatic reloading of offloaded messages when the
         model requests them via reload hints (e.g., [[HANDLE:xxx]]). When enabled,
@@ -66,12 +73,15 @@ class ContextEngineConfig(BaseModel):
 
     openrouter_request_timeout : float, default 3.0
         Timeout in seconds for fetching OpenRouter model metadata.
+
+    compression_recall_config : CompressionRecallConfig
+        Context-wide policy for archiving source messages replaced by
+        compression and making those archives available for recall.
     """
 
     max_context_message_num: Optional[int] = Field(default=None, gt=0)
     default_window_message_num: Optional[int] = Field(default=None, gt=0)
     default_window_round_num: Optional[int] = Field(default=None, gt=0)
-    enable_kv_cache_release: bool = Field(default=False)
     enable_reload: bool = Field(default=False)
     enable_tiktoken_counter: bool = Field(default=False)
     context_window_tokens: Optional[int] = Field(default=None, gt=0)
@@ -79,3 +89,6 @@ class ContextEngineConfig(BaseModel):
     model_context_window_tokens: Optional[Dict[str, int]] = Field(default=None)
     enable_openrouter_model_context_window_tokens: bool = Field(default=False)
     openrouter_request_timeout: float = Field(default=3.0, gt=0)
+    compression_recall_config: CompressionRecallConfig = Field(
+        default_factory=CompressionRecallConfig,
+    )

@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -121,6 +122,14 @@ class TeamAgent(BaseAgent):
         return self._configurator.resources
 
     @property
+    def build_context(self):
+        """Return the assembly BuildContext, or None before configure()."""
+        harness = self.harness
+        if harness is not None:
+            return harness.build_context
+        return None
+
+    @property
     def tiny_agent_model_resolver(self):
         """Return the team's model-name resolver used to build tiny agents.
 
@@ -169,6 +178,7 @@ class TeamAgent(BaseAgent):
             name=tiny_spec.name,
             language=language,
             max_iterations=tiny_spec.max_iterations,
+            enable_security_rail=tiny_spec.enable_security_rail,
         )
         infra.tiny_agents[name] = agent
         return agent
@@ -688,6 +698,7 @@ class TeamAgent(BaseAgent):
                 if raw_query:
                     await self._coordination.enqueue_user_input(inputs)
                 await self._coordination.enqueue_initial_mailbox_poll()
+                await self._coordination.enqueue_initial_task_poll()
             last_result = None
             while True:
                 chunk = await self._stream_controller.stream_queue.get()
@@ -744,6 +755,7 @@ class TeamAgent(BaseAgent):
                 if raw_query:
                     await self._coordination.enqueue_user_input(inputs)
                 await self._coordination.enqueue_initial_mailbox_poll()
+                await self._coordination.enqueue_initial_task_poll()
             while True:
                 chunk = await self._stream_controller.stream_queue.get()
                 if chunk is None:
@@ -770,12 +782,24 @@ class TeamAgent(BaseAgent):
         """Pause coordination without tearing down teammate processes."""
         await self._pause_coordination()
 
-    async def _stop_coordination(self) -> None:
-        await self._coordination.stop()
+    async def _stop_coordination(
+        self,
+        *,
+        on_quiesced: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        await self._coordination.stop(on_quiesced=on_quiesced)
 
-    async def stop_coordination(self) -> None:
-        """Stop coordination and shut down all spawned teammates."""
-        await self._stop_coordination()
+    async def stop_coordination(
+        self,
+        *,
+        on_quiesced: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
+        """Stop coordination and shut down all spawned teammates.
+
+        ``on_quiesced`` is forwarded to the coordination kernel and runs
+        before the kernel and tiny-agent resources are torn down.
+        """
+        await self._stop_coordination(on_quiesced=on_quiesced)
         await self._dispose_tiny_agents()
 
     def _close_stream(self) -> None:

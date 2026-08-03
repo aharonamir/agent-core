@@ -1,5 +1,5 @@
 # coding: utf-8
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 """Member-lifecycle coordination events.
 
 Handles all six ``MEMBER_*`` events. Leader observes every member's
@@ -14,12 +14,13 @@ only.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
 from openjiuwen.agent_teams.agent.blueprint import TeamAgentBlueprint
-from openjiuwen.agent_teams.agent.coordination.event_bus import CoordinationEvent
+from openjiuwen.agent_teams.agent.coordination.event_bus import CoordinationEvent, InnerEventType
 from openjiuwen.agent_teams.agent.coordination.handlers.base import BaseCoordinationHandler
 from openjiuwen.agent_teams.agent.infra import TeamInfra
+from openjiuwen.agent_teams.harness.state import HarnessState
 from openjiuwen.agent_teams.i18n import t
 from openjiuwen.agent_teams.schema.events import EventMessage, TeamEvent
 from openjiuwen.agent_teams.schema.status import MemberStatus
@@ -28,6 +29,7 @@ from openjiuwen.core.common.logging import team_logger
 
 if TYPE_CHECKING:
     from openjiuwen.agent_teams.agent.coordination.dispatcher import DispatcherHost, PollController
+    from openjiuwen.agent_teams.external.runtime import CliRuntimeBase
 
 
 class MemberHandler(BaseCoordinationHandler):
@@ -48,6 +50,7 @@ class MemberHandler(BaseCoordinationHandler):
     """
 
     EVENT_METHOD_MAP: ClassVar[dict[str, str]] = {
+        InnerEventType.REFRESH_TEAM_CONTEXT.value: "on_refresh_team_context",
         TeamEvent.MEMBER_SPAWNED: "on_member_event",
         TeamEvent.MEMBER_RESTARTED: "on_member_event",
         TeamEvent.MEMBER_STATUS_CHANGED: "on_member_event",
@@ -55,6 +58,12 @@ class MemberHandler(BaseCoordinationHandler):
         TeamEvent.MEMBER_SHUTDOWN: "on_member_event",
         TeamEvent.MEMBER_CANCELED: "on_member_event",
     }
+    TEAM_CONTEXT_EVENTS: ClassVar[frozenset[str]] = frozenset(
+        {
+            TeamEvent.MEMBER_SPAWNED,
+            TeamEvent.MEMBER_SHUTDOWN,
+        }
+    )
 
     def __init__(
         self,
@@ -96,12 +105,63 @@ class MemberHandler(BaseCoordinationHandler):
         payload = event.get_payload()
         target_id = payload.member_name
         if target_id is None or target_id != member_name:
+            await self._deliver_external_team_context(event)
             return
         if event.event_type == TeamEvent.MEMBER_CANCELED:
             await self._round.cancel_agent()
-        elif event.event_type == TeamEvent.MEMBER_SHUTDOWN and getattr(payload, "force", False):
+            return
+        if event.event_type == TeamEvent.MEMBER_SHUTDOWN and getattr(payload, "force", False):
             team_logger.info("[{}] forced shutdown; tearing down without a final round", member_name)
             await self._lifecycle.shutdown_self()
+            return
+
+    async def _deliver_external_team_context(self, event: CoordinationEvent) -> None:
+        """Announce team state to an external CLI member after a roster change."""
+        if event.event_type not in self.TEAM_CONTEXT_EVENTS:
+            return
+        await self._announce_external_team_context()
+
+    async def on_refresh_team_context(self, _event: CoordinationEvent) -> None:
+        """Announce any team state this member has not been told about yet."""
+        await self._announce_external_team_context()
+
+    async def _announce_external_team_context(self) -> None:
+        """Push pending team state to an external CLI member as its own message.
+
+        An external CLI member has no rail and no reachable context, so its
+        runtime normally folds team state into the next message something else
+        sends it. That can lag a roster change by a whole turn, so roster events
+        prod the runtime to send the announcement on its own instead. The
+        runtime's tracker decides whether there is anything to say, which makes
+        this a no-op for a member that is already up to date -- and keeps the
+        two paths from announcing the same change twice.
+        """
+        runtime = self._external_runtime()
+        if runtime is None:
+            return
+        if runtime.state is HarnessState.TERMINATED:
+            team_logger.debug(
+                "[{}] skip external team context refresh; runtime is terminated",
+                self._blueprint.member_name,
+            )
+            return
+        try:
+            await runtime.announce_team_context()
+        except Exception as exc:
+            team_logger.warning(
+                "[{}] failed to refresh external team context: {}",
+                self._blueprint.member_name,
+                exc,
+            )
+
+    def _external_runtime(self) -> "CliRuntimeBase | None":
+        """Return the external CLI runtime when this member uses one."""
+        runtime = getattr(self._round, "harness", None)
+        from openjiuwen.agent_teams.external.runtime import CliRuntimeBase
+
+        if isinstance(runtime, CliRuntimeBase):
+            return runtime
+        return None
 
     async def _handle_leader_member_event(self, event: CoordinationEvent) -> None:
         """Handle member events as the leader — observe other members' lifecycle."""
