@@ -164,6 +164,15 @@ class AudioModelConfig:
 
 
 @dataclass
+class TaskLoopNoProgressGuardConfig:
+    """Guard repeated empty/near-empty no-tool answers in task-loop mode."""
+
+    enabled: bool = True
+    max_consecutive_empty_answers: int = 3
+    min_answer_chars: int = 80
+
+
+@dataclass
 class DeepAgentConfig:
     """Runtime configuration for DeepAgent.
 
@@ -291,6 +300,11 @@ class DeepAgentConfig:
     # Multi-rollout: spawn N parallel attempts for the same task.
     multi_rollout: "MultiRolloutConfig" = field(
         default_factory=lambda: MultiRolloutConfig()
+    )
+
+    # Task-loop no-progress guard: stop repeated short answer rounds.
+    task_loop_no_progress_guard: TaskLoopNoProgressGuardConfig = field(
+        default_factory=lambda: TaskLoopNoProgressGuardConfig()
     )
 
 
