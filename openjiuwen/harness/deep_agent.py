@@ -296,6 +296,9 @@ class DeepAgent(BaseAgent):
         self._fresh_input_context_factory: Optional[FreshInputContextFactory] = None
         self._task_resource_prepares: list[Callable[[], Awaitable[None]]] = []
         self._task_resource_cleanups: list[Callable[[], Awaitable[None]]] = []
+        from openjiuwen.agent_teams.reliability.source_health import SourceHealthStore
+
+        self.source_health_store = SourceHealthStore()
         super().__init__(card)
 
     def set_session_toolkit(self, toolkit: SessionToolkit | None) -> None:
@@ -1341,7 +1344,7 @@ class DeepAgent(BaseAgent):
             logger.info("already get deepagent instance, return it")
             # Only bind the field here; cwd is applied in _ensure_initialized
             # so create_subagent does not mutate the parent's ContextVar.
-            return self._bind_inherited_artifact_root(spec)
+            return self._bind_inherited_artifact_root(self._inherit_subagent_runtime_rails(spec))
 
         if not self._deep_config.workspace or isinstance(self._deep_config.workspace, str):
             workspace_path = (
@@ -1461,45 +1464,41 @@ class DeepAgent(BaseAgent):
                     )
                 if browser_capabilities is not None:
                     factory_kwargs["browser_capabilities"] = list(browser_capabilities)
-                return self._bind_inherited_artifact_root(
-                    create_browser_agent(
-                        **browser_create_kwargs,
-                        **factory_kwargs,
-                    )
+                child = create_browser_agent(
+                    **browser_create_kwargs,
+                    **factory_kwargs,
                 )
+                return self._bind_inherited_artifact_root(self._inherit_subagent_runtime_rails(child))
             if normalized_factory == "code_agent":
                 from openjiuwen.harness.subagents.code_agent import (
                     create_code_agent,
                 )
 
-                return self._bind_inherited_artifact_root(
-                    create_code_agent(
-                        **create_kwargs,
-                        **dict(spec.factory_kwargs or {}),
-                    )
+                child = create_code_agent(
+                    **create_kwargs,
+                    **dict(spec.factory_kwargs or {}),
                 )
+                return self._bind_inherited_artifact_root(self._inherit_subagent_runtime_rails(child))
             if normalized_factory == "research_agent":
                 from openjiuwen.harness.subagents.research_agent import (
                     create_research_agent,
                 )
 
-                return self._bind_inherited_artifact_root(
-                    create_research_agent(
-                        **create_kwargs,
-                        **dict(spec.factory_kwargs or {}),
-                    )
+                child = create_research_agent(
+                    **create_kwargs,
+                    **dict(spec.factory_kwargs or {}),
                 )
+                return self._bind_inherited_artifact_root(self._inherit_subagent_runtime_rails(child))
             if normalized_factory in {"mobile_gui_agent", "mobile_agent"}:
                 from openjiuwen.harness.subagents.mobile_gui_agent import (
                     create_mobile_gui_agent,
                 )
 
-                return self._bind_inherited_artifact_root(
-                    create_mobile_gui_agent(
-                        **create_kwargs,
-                        **dict(spec.factory_kwargs or {}),
-                    )
+                child = create_mobile_gui_agent(
+                    **create_kwargs,
+                    **dict(spec.factory_kwargs or {}),
                 )
+                return self._bind_inherited_artifact_root(self._inherit_subagent_runtime_rails(child))
 
             raise build_error(
                 StatusCode.DEEPAGENT_CREATE_SUBAGENT_NOT_FOUND,
@@ -1508,9 +1507,49 @@ class DeepAgent(BaseAgent):
 
         from openjiuwen.harness.factory import create_deep_agent
 
-        return self._bind_inherited_artifact_root(
-            create_deep_agent(**create_kwargs, **dict(spec.factory_kwargs or {}))
-        )
+        child = create_deep_agent(**create_kwargs, **dict(spec.factory_kwargs or {}))
+        return self._bind_inherited_artifact_root(self._inherit_subagent_runtime_rails(child))
+
+    def _inherit_subagent_runtime_rails(self, child: "DeepAgent") -> "DeepAgent":
+        """Attach fresh per-child rails backed by parent run-scoped state."""
+        if not all(hasattr(child, name) for name in ("add_rail", "find_rails_by_type", "find_rail_by_name")):
+            return child
+
+        store = getattr(self, "source_health_store", None)
+        if store is not None:
+            from openjiuwen.agent_teams.reliability.source_health_rail import SourceHealthRail
+
+            child.source_health_store = store
+            if not child.find_rails_by_type((SourceHealthRail,)):
+                child.add_rail(SourceHealthRail(store))
+
+        project_rail = self._clone_project_memory_rail()
+        if project_rail is not None and child.find_rail_by_name("ProjectMemoryRail") is None:
+            child.add_rail(project_rail)
+        return child
+
+    def _clone_project_memory_rail(self) -> AgentRail | None:
+        """Clone a product-side ProjectMemoryRail without importing jiuwenswarm."""
+        parent_rail = self.find_rail_by_name("ProjectMemoryRail")
+        if parent_rail is None:
+            return None
+        rail_type = type(parent_rail)
+        try:
+            workspace = parent_rail.resolve_workspace_path()
+        except Exception:
+            workspace = getattr(parent_rail, "_workspace_path", None)
+        if not workspace:
+            return None
+        try:
+            return rail_type(
+                workspace=str(workspace),
+                language=getattr(parent_rail, "_language", "cn"),
+                max_chars=getattr(parent_rail, "_max_chars", 60_000),
+                additional_directories=tuple(getattr(parent_rail, "_additional_directories", ()) or ()),
+            )
+        except Exception as exc:
+            logger.warning("[DeepAgent] failed to clone ProjectMemoryRail for subagent: %s", exc)
+            return None
 
     def _find_subagent_spec(self, subagent_type: str) -> Optional["SubAgentConfig | DeepAgent"]:
         """Find SubAgentConfig matching subagent_type.

@@ -534,6 +534,31 @@ async def test_fetch_basic_html_extracts_main_content(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_prepends_content_quality_verdict(monkeypatch):
+    _patch_request(
+        monkeypatch,
+        lambda method, url, body: _resp(
+            200,
+            b"<html><title>Tongling hotels</title><body><main><p>"
+            b"Tongling hotel availability and local neighborhood information. "
+            b"This page discusses properties and travel details in Tongling only."
+            b"</p></main></body></html>",
+            headers={"Content-Type": "text/html; charset=utf-8"},
+        ),
+    )
+
+    tool = WebFetchWebpageTool(language="cn")
+    result = await tool.invoke(
+        {
+            "url": "https://example.com/hotels",
+            "query": "Barcelona hotels",
+        }
+    )
+
+    assert "Content quality: UNRELATED - ignore" in result
+
+
+@pytest.mark.asyncio
 async def test_fetch_max_chars_zero(monkeypatch):
     _patch_request(
         monkeypatch,

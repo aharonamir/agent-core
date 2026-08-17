@@ -36,6 +36,28 @@ from openjiuwen.harness.tools.web._common import (
 from openjiuwen.harness.tools.web._decode import _decode_response_text
 
 
+_LANDING_MARKERS = (
+    "enable javascript",
+    "sign in",
+    "create an account",
+    "access denied",
+    "captcha",
+    "are you a robot",
+)
+_GENERIC_ENTITY_TERMS = {
+    "hotel",
+    "hotels",
+    "travel",
+    "flight",
+    "flights",
+    "weather",
+    "price",
+    "prices",
+    "cost",
+    "costs",
+}
+
+
 def _raise_fetch_http_error(url: str, status: int, body: bytes) -> None:
     """Raise a webpage-fetch error that includes the response body.
 
@@ -223,6 +245,29 @@ class WebFetchWebpageTool(Tool):
         return f"{value[:max_chars]}\n...[truncated]"
 
     @staticmethod
+    def _content_quality(title: str, content: str, query: str | None = None) -> str | None:
+        """Return a deterministic content-quality verdict for fetched text."""
+        text = (content or "").strip()
+        if not text or text == "[empty]" or len(text) < 80:
+            return "EMPTY"
+
+        lowered = text[:2000].lower()
+        if any(marker in lowered for marker in _LANDING_MARKERS):
+            return "LANDING"
+
+        query_terms = {
+            term
+            for term in re.findall(r"[A-Za-z][A-Za-z0-9]+", (query or "").lower())
+            if len(term) >= 4 and term not in _GENERIC_ENTITY_TERMS
+        }
+        if query_terms:
+            haystack = f"{title}\n{text[:2000]}".lower()
+            overlap = {term for term in query_terms if term in haystack}
+            if not overlap:
+                return "UNRELATED"
+        return None
+
+    @staticmethod
     def _normalize_url(url: str) -> str:
         """Normalize URL by decoding redirects and ensuring protocol."""
         raw = (url or "").strip()
@@ -268,8 +313,17 @@ class WebFetchWebpageTool(Tool):
         ]
         if data.get("title"):
             lines.append(f"Title: {data['title']}")
+        content = WebFetchWebpageTool._clip_text(str(data.get("content", "") or ""), max_chars) or "[empty]"
+        verdict = WebFetchWebpageTool._content_quality(
+            str(data.get("title", "") or ""),
+            content,
+            str(inputs.get("query", "") or inputs.get("expected_content", "") or ""),
+        )
+        if verdict is not None:
+            ignore_hint = "ignore" if verdict in {"UNRELATED", "LANDING"} else "treat as unusable"
+            lines.append(f"Content quality: {verdict} - {ignore_hint}")
         lines.append("Content:")
-        lines.append(WebFetchWebpageTool._clip_text(str(data.get("content", "") or ""), max_chars) or "[empty]")
+        lines.append(content)
         if data.get("truncated"):
             lines.append("...[truncated: response exceeded byte limit]")
         return "\n".join(lines)

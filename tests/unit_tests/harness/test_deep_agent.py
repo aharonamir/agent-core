@@ -1357,6 +1357,108 @@ def test_create_subagent_uses_code_agent_factory(tmp_path) -> None:
     assert Path(call_kwargs["workspace"].root_path).name == "sub_session_id"
 
 
+class ProjectMemoryRail(AgentRail):
+    """Test double matching jiuwenswarm ProjectMemoryRail's constructor."""
+
+    def __init__(
+        self,
+        workspace: str,
+        language: str = "cn",
+        max_chars: int = 60_000,
+        additional_directories: tuple[str, ...] = (),
+    ) -> None:
+        self._workspace_path = workspace
+        self._language = language
+        self._max_chars = max_chars
+        self._additional_directories = tuple(additional_directories)
+
+    def resolve_workspace_path(self) -> Path:
+        return Path(self._workspace_path)
+
+
+def _assert_inherited_source_health_and_memory(parent: DeepAgent, child: DeepAgent) -> None:
+    assert child.source_health_store is parent.source_health_store
+    assert child.find_rail_by_name("SourceHealthRail") is not None
+    inherited_project_rail = child.find_rail_by_name("ProjectMemoryRail")
+    parent_project_rail = parent.find_rail_by_name("ProjectMemoryRail")
+    assert inherited_project_rail is not None
+    assert parent_project_rail is not None
+    assert inherited_project_rail is not parent_project_rail
+    assert inherited_project_rail._workspace_path == parent_project_rail._workspace_path
+    assert inherited_project_rail._language == parent_project_rail._language
+    assert inherited_project_rail._max_chars == parent_project_rail._max_chars
+    assert inherited_project_rail._additional_directories == parent_project_rail._additional_directories
+
+
+def test_create_subagent_inherits_runtime_rails_for_explore_and_plan(tmp_path) -> None:
+    parent = create_deep_agent(
+        model=_create_dummy_model(),
+        card=AgentCard(name="parent", description="parent"),
+        system_prompt="parent prompt",
+        workspace=Workspace(root_path=str(tmp_path / "parent_workspace")),
+        rails=[
+            ProjectMemoryRail(
+                workspace=str(tmp_path),
+                language="en",
+                max_chars=1234,
+                additional_directories=("docs",),
+            )
+        ],
+        subagents=[
+            SubAgentConfig(agent_card=AgentCard(name="explore_agent", description="explore"), system_prompt="explore"),
+            SubAgentConfig(agent_card=AgentCard(name="plan_agent", description="plan"), system_prompt="plan"),
+        ],
+    )
+
+    explore = parent.create_subagent("explore_agent", "explore_session")
+    plan = parent.create_subagent("plan_agent", "plan_session")
+
+    _assert_inherited_source_health_and_memory(parent, explore)
+    _assert_inherited_source_health_and_memory(parent, plan)
+
+
+def test_create_subagent_inherits_runtime_rails_for_code_and_browser_factories(tmp_path) -> None:
+    parent = create_deep_agent(
+        model=_create_dummy_model(),
+        card=AgentCard(name="parent", description="parent"),
+        system_prompt="parent prompt",
+        workspace=Workspace(root_path=str(tmp_path / "parent_workspace")),
+        rails=[
+            ProjectMemoryRail(
+                workspace=str(tmp_path),
+                language="en",
+                max_chars=1234,
+                additional_directories=("docs",),
+            )
+        ],
+        subagents=[
+            SubAgentConfig(
+                agent_card=AgentCard(name="code_agent", description="code"),
+                system_prompt="code",
+                factory_name=CODE_AGENT_FACTORY_NAME,
+            ),
+            SubAgentConfig(
+                agent_card=AgentCard(name="browser_agent", description="browser"),
+                system_prompt="browser",
+                factory_name="browser_agent",
+            ),
+        ],
+    )
+
+    with patch(
+        "openjiuwen.harness.subagents.code_agent.create_code_agent",
+        side_effect=lambda **kwargs: create_deep_agent(**kwargs),
+    ), patch(
+        "openjiuwen.harness.subagents.browser_agent.create_browser_agent",
+        side_effect=lambda **kwargs: create_deep_agent(**kwargs),
+    ):
+        code = parent.create_subagent("code_agent", "code_session")
+        browser = parent.create_subagent("browser_agent", "browser_session")
+
+    _assert_inherited_source_health_and_memory(parent, code)
+    _assert_inherited_source_health_and_memory(parent, browser)
+
+
 def test_create_subagent_forwards_browser_capabilities_to_factory(tmp_path) -> None:
     browser_spec = SubAgentConfig(
         agent_card=AgentCard(name="browser_agent", description="browser"),

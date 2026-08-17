@@ -17,6 +17,14 @@ from openjiuwen.agent_teams.reliability.anomaly import Anomaly, AnomalyKind, Sev
 from openjiuwen.agent_teams.reliability.config import ReliabilityConfig
 from openjiuwen.agent_teams.reliability.remediation.action import RemediationAction
 from openjiuwen.agent_teams.reliability.signals import Signal, SignalKind
+from openjiuwen.agent_teams.reliability.source_health import (
+    SourceHealthEntry,
+    SourceHealthKey,
+    SourceHealthOutcome,
+    SourceHealthProvenance,
+    SourceHealthStore,
+)
+from openjiuwen.agent_teams.reliability.source_health_rail import SourceHealthRail
 from openjiuwen.agent_teams.reliability.window import SlidingWindowCounter, stable_call_hash
 
 __all__ = [
@@ -28,5 +36,11 @@ __all__ = [
     "Signal",
     "SignalKind",
     "SlidingWindowCounter",
+    "SourceHealthEntry",
+    "SourceHealthKey",
+    "SourceHealthOutcome",
+    "SourceHealthProvenance",
+    "SourceHealthRail",
+    "SourceHealthStore",
     "stable_call_hash",
 ]
