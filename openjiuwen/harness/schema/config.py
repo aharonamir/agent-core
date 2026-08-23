@@ -169,7 +169,7 @@ class TaskLoopNoProgressGuardConfig:
 
     enabled: bool = True
     max_consecutive_empty_answers: int = 3
-    min_answer_chars: int = 80
+    min_answer_chars: int = 20
 
 
 @dataclass
@@ -306,6 +306,10 @@ class DeepAgentConfig:
     task_loop_no_progress_guard: TaskLoopNoProgressGuardConfig = field(
         default_factory=lambda: TaskLoopNoProgressGuardConfig()
     )
+
+    # Skill budget: gently truncate skill prompts by dropping whole low-ranked skills.
+    skill_budget_max_skills: Optional[int] = None
+    skill_budget_max_total_chars: Optional[int] = None
 
 
 @dataclass
