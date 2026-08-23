@@ -2618,9 +2618,24 @@ class DeepAgent(BaseAgent):
         try:
             current_query = modified.query
             outer_round = 0
+            MAX_OUTER_ROUNDS = 50
 
             while coordinator.should_continue():
                 outer_round += 1
+                if outer_round > MAX_OUTER_ROUNDS:
+                    self._log_loop(
+                        f"round={outer_round} exceeded MAX_OUTER_ROUNDS={MAX_OUTER_ROUNDS}, forcing stop"
+                    )
+                    yield {
+                        "output": (
+                            "Task loop stopped after exceeding the maximum number of "
+                            f"outer rounds ({MAX_OUTER_ROUNDS}). This usually indicates "
+                            "the model is not making observable progress."
+                        ),
+                        "result_type": "error",
+                        "stop_reason": "MaxOuterRounds",
+                    }
+                    break
                 # Drain new follow-ups, merge into state buffer
                 new_follow_ups = controller.drain_follow_up()
                 _state = self.load_state(session)
@@ -2706,6 +2721,8 @@ class DeepAgent(BaseAgent):
                         "result_type": "error",
                         "stop_reason": stop_reason,
                     }
+                # Note: MaxOuterRounds yields its own error result inside the loop,
+                # so no additional yield is needed here.
         finally:
             # Clear stop_condition_state so the next invoke starts fresh.
             _state = self.load_state(session)
