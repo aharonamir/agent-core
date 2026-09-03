@@ -2618,18 +2618,18 @@ class DeepAgent(BaseAgent):
         try:
             current_query = modified.query
             outer_round = 0
-            MAX_OUTER_ROUNDS = 50
+            max_outer_rounds = 50
 
             while coordinator.should_continue():
                 outer_round += 1
-                if outer_round > MAX_OUTER_ROUNDS:
+                if outer_round > max_outer_rounds:
                     self._log_loop(
-                        f"round={outer_round} exceeded MAX_OUTER_ROUNDS={MAX_OUTER_ROUNDS}, forcing stop"
+                        f"round={outer_round} exceeded max_outer_rounds={max_outer_rounds}, forcing stop"
                     )
                     yield {
                         "output": (
                             "Task loop stopped after exceeding the maximum number of "
-                            f"outer rounds ({MAX_OUTER_ROUNDS}). This usually indicates "
+                            f"outer rounds ({max_outer_rounds}). This usually indicates "
                             "the model is not making observable progress."
                         ),
                         "result_type": "error",

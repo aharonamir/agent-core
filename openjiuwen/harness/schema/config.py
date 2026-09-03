@@ -302,6 +302,8 @@ class DeepAgentConfig:
     # Skill budget: gently truncate skill prompts by dropping whole low-ranked skills.
     skill_budget_max_skills: Optional[int] = None
     skill_budget_max_total_chars: Optional[int] = None
+
+
 @dataclass
 class SubAgentConfig:
     """Configuration for a DeepAgent sub-agent."""

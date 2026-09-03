@@ -11,6 +11,7 @@ import yaml
 
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.llm.model import Model
+from openjiuwen.core.foundation.llm.schema.message import UserMessage
 from openjiuwen.core.foundation.tool.base import ToolCard
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.core.single_agent.skills.skill_manager import Skill
@@ -615,15 +616,11 @@ class SkillUseRail(DeepAgentRail):
         messages = getattr(ctx.inputs, "messages", None)
         if not messages:
             return None
-        try:
-            from openjiuwen.core.foundation.llm.schema.message import UserMessage
-            for message in reversed(messages):
-                if isinstance(message, UserMessage):
-                    content = getattr(message, "content", None)
-                    if isinstance(content, str) and content.strip():
-                        return content.strip()
-        except Exception:
-            pass
+        for message in reversed(messages):
+            if isinstance(message, UserMessage):
+                content = getattr(message, "content", None)
+                if isinstance(content, str) and content.strip():
+                    return content.strip()
         return None
 
     def get_skills_for_session(self, session: Any = None) -> List[Skill]:
